@@ -1,0 +1,206 @@
+diff --git a/Makefile b/Makefile
+index 9e0c521..1dbfea5 100644
+--- a/Makefile
++++ b/Makefile
+@@ -18,7 +18,7 @@
+ FLAGS=-Wall -pedantic
+ INC=-Isrc/
+ CFLAGS=$(FLAGS) -c -g --std=c99 $(INC) `sdl-config --cflags`
+-LFLAGS=$(FLAGS) -lncurses `sdl-config --libs` -lSDL_mixer
++LFLAGS=$(FLAGS) -lncurses `sdl-config --libs` -lSDL_mixer -no-pie
+ DIR_GUARD=@mkdir -p $(@D)
+ 
+ # Build configurations.
+diff --git a/src/main.c b/src/main.c
+index a79c0c2..f552dd4 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -246,7 +246,11 @@
+       move = TM_CLOCK;
+       break;
+     case KEY_DOWN:
++#ifndef VK_CHANGES
+       move = TM_DROP;
++#else
++      move = TM_NONE;
++#endif
+       break;
+     case 'q':
+       running = false;
+@@ -272,17 +276,121 @@
+       move = TM_NONE;
+       break;
+     case ' ':
++#ifndef VK_CHANGES
+       move = TM_HOLD;
++#else
++      move = TM_DROP;
++#endif
+       break;
+     default:
+       move = TM_NONE;
+     }
+   }
+ 
++  // Output ending message.
++#ifdef VK_CHANGES
++  // Deinitialize Sound
++  Mix_HaltMusic();
++  Mix_FreeMusic(music);
++  Mix_CloseAudio();
++  Mix_Quit();
++
++  clear();
++  printw("Game over!\n\n");
++  printw("You finished with %d points on level %d.\n\n", tg->points, tg->level);
++
++  results_struct *obj = malloc(sizeof(results_struct));
++  FILE *f = fopen(RESULTS_FILE, "r");
++  if (f != NULL) {
++    fread(obj, sizeof(results_struct), 1, f);
++  } else {
++    memset(obj, 0, sizeof(results_struct));
++    f = fopen(RESULTS_FILE, "w");
++    fwrite(obj, sizeof(results_struct), 1, f);
++    fclose(f);
++    f = fopen(RESULTS_FILE, "r");
++    if (f == NULL) {
++      perror("tetris.results init file");
++      exit(EXIT_FAILURE);
++    }
++    fread(obj, sizeof(results_struct), 1, f);
++  }
++  fclose(f);
++
++  printw("Previous results:\n-----------------------------------------------\n");
++  for (int i = 0; i < NUMBER_OF_RESULTS; i++) {
++    if (!obj->name[i][0]) {
++      break;
++    }
++    char x[NAME_LENGTH + 1];
++    strcpy(x, asctime(localtime(&obj->date_time[i])));
++    x[strlen(x) - 1] = 0;
++    printw("%2d. %s %9d %s\n", i + 1, x, obj->results[i], obj->name[i]);
++  }
++
++  int move_done = 0;
++  char new_name[NAME_LENGTH + 1];
++  new_name[0] = 0;
++  for (int i = 0; i < NUMBER_OF_RESULTS; i++) {
++    if (tg->points > obj->results[i]) {
++      printw("\nEnter your name(up to 64 chars):");
++      echo();
++      timeout(-1);
++      getnstr(new_name, NAME_LENGTH);
++      timeout(0);
++      noecho();
++      time_t t = time(NULL);
++      if (!obj->name[i][0]) {
++        strncpy(obj->name[i], new_name, NAME_LENGTH);
++        obj->results[i] = tg->points;
++        obj->date_time[i] = t;
++      } else {
++        for (int j = (NUMBER_OF_RESULTS - 2); j >= i; j--) {
++          int k = j + 1;
++          strncpy(obj->name[k], obj->name[j], NAME_LENGTH);
++          obj->results[k] = obj->results[j];
++          obj->date_time[k] = obj->date_time[j];
++        }
++        strncpy(obj->name[i], new_name, NAME_LENGTH);
++        obj->results[i] = tg->points;
++        obj->date_time[i] = t;
++      }
++      f = fopen(RESULTS_FILE, "w");
++      fwrite(obj, sizeof(results_struct), 1, f);
++      fclose(f);
++      move_done = 1;
++      break;
++    }
++  }
++
++  if (move_done) {
++    printw("Current results:\n-----------------------------------------------\n");
++    for (int i = 0; i < NUMBER_OF_RESULTS; i++) {
++      if (!obj->name[i][0]) {
++        break;
++      }
++      char x[NAME_LENGTH + 1];
++      strcpy(x, asctime(localtime(&obj->date_time[i])));
++      x[strlen(x) - 1] = 0;
++      printw("%2d. %s %9d %s\n", i + 1, x, obj->results[i], obj->name[i]);
++    }
++  }
++
++  free(obj);
++
++  printw("\nPress F1 for next game or Ctrl-C to terminate ...");
++  echo();
++  timeout(-1);
++  while (getch() != KEY_F(1));
++  timeout(0);
++  noecho();
++#endif
++
+   // Deinitialize NCurses
+   wclear(stdscr);
+   endwin();
+ 
++#ifndef VK_CHANGES
+   // Deinitialize Sound
+   Mix_HaltMusic();
+   Mix_FreeMusic(music);
+@@ -292,8 +400,14 @@
+   // Output ending message.
+   printf("Game over!\n");
+   printf("You finished with %d points on level %d.\n", tg->points, tg->level);
++#endif
+ 
+   // Deinitialize Tetris
+   tg_delete(tg);
++
++#ifdef VK_CHANGES
++  main(argc, argv);
++#else
+   return 0;
++#endif
+ }
+diff --git a/src/tetris.c b/src/tetris.c
+index 16fab11..b18bd64 100644
+--- a/src/tetris.c
++++ b/src/tetris.c
+@@ -364,6 +364,11 @@
+   obj->points += line_multiplier[lines_cleared] * (obj->level + 1);
+   if (lines_cleared >= obj->lines_remaining) {
+     obj->level = MIN(MAX_LEVEL, obj->level + 1);
++#ifdef VK_CHANGES
++    if (obj->level > 18) {
++        obj->level = 18;
++    }
++#endif
+     lines_cleared -= obj->lines_remaining;
+     obj->lines_remaining = LINES_PER_LEVEL - lines_cleared;
+   } else {
+diff --git a/src/tetris.h b/src/tetris.h
+index f3f9eb0..4f7d20e 100644
+--- a/src/tetris.h
++++ b/src/tetris.h
+@@ -19,6 +19,19 @@
+ #include <stdio.h> // for FILE
+ #include <stdbool.h> // for bool
+ 
++#define VK_CHANGES
++
++#ifdef VK_CHANGES
++#define RESULTS_FILE "tetris.results"
++#define NAME_LENGTH 64
++#define NUMBER_OF_RESULTS 10
++typedef struct {
++  char   name[NUMBER_OF_RESULTS][NAME_LENGTH + 1];
++  int    results[NUMBER_OF_RESULTS];
++  time_t date_time[NUMBER_OF_RESULTS];
++} results_struct;
++#endif
++
+ /*
+   Convert a tetromino type to its corresponding cell.
+  */
